@@ -15,6 +15,86 @@ from optimization import FeatureArray, DeformationField, PoseArray
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def batchify(fn, chunk):
+    """Constructs a version of 'fn' that applies to smaller batches."""
+    if chunk is None:
+        return fn
+
+    def ret(inputs):
+        return torch.cat([fn(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
+
+    return ret
+
+
+def run_network(inputs, viewdirs, feature_array, pose_array, frame_ids, deformation_field, c2w_array,
+                fn, embed_fn, embeddirs_fn, netchunk=1024 * 64):
+    """Prepares inputs and applies network 'fn'."""
+
+    if frame_ids is not None:
+        frame_ids = frame_ids[:,None].expand(inputs.shape[:-1])
+        frame_ids = torch.reshape(frame_ids, [-1]).to(torch.int64)
+
+     # Deform points in the image plane
+    translation = None
+    if deformation_field is not None:
+        # image_coords: (Bs, 2)
+        image_coords = viewdirs[:, :2]
+
+        translation = deformation_field(image_coords)
+        translation = torch.cat([translation, torch.zeros_like(translation[..., :1])], -1)
+
+        # inputs: (Bs, N_sample, 3)
+        # Translation is added to the z axis
+        sample_translations = inputs[:, :, 2:] * translation[:, None, :]
+        
+        inputs = inputs + sample_translations
+
+        viewdirs = viewdirs + translation
+        viewdirs = viewdirs / torch.linalg.norm(viewdirs, axis=-1, keepdims=True)
+
+    inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
+
+    # Transform points to world space
+    if c2w_array is not None:
+        # c2w (inputs_flat.shape[0], 4, 4)
+        c2w = c2w_array[frame_ids]
+        # inputs_flat (327680, 3)
+        inputs_flat = torch.sum(inputs_flat[..., None, :] * c2w[..., :3, :3], -1) + c2w[..., :3, 3]
+
+    # Apply pose correction
+    if pose_array is not None:
+        R = pose_array.get_rotation_matrices(frame_ids)
+        t = pose_array.get_translations(frame_ids)
+        inputs_flat = torch.sum(inputs_flat[..., None, :] * R, -1) + t
+
+    # Apply positional encoding
+    embedded = embed_fn(inputs_flat)
+
+    # Add latent code
+    if feature_array is not None:
+        frame_features = feature_array(frame_ids)
+        embedded = torch.cat([embedded, frame_features], -1)
+
+    # Add view directions
+    if embeddirs_fn is not None:
+        input_dirs = viewdirs[:,None].expand(inputs.shape)
+        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+
+        if c2w_array is not None:
+            input_dirs_flat = torch.sum(input_dirs_flat[..., None, :] * c2w[..., :3, :3], -1)
+        if pose_array is not None:
+            input_dirs_flat = torch.sum(input_dirs_flat[..., None, :] * R, -1)
+
+        # Apply positional encoding to view directions
+        embedded_dirs = embeddirs_fn(input_dirs_flat)
+        embedded = torch.cat([embedded, embedded_dirs], -1)
+
+    outputs_flat = batchify(fn, netchunk)(embedded)
+    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
+
+    return outputs, translation
+
+
 def render_rays(ray_batch,
                 network_fn,
                 network_query_fn,
@@ -230,7 +310,9 @@ def render_rays(ray_batch,
             z_vals = torch.cat([z_vals, z_samples], -1)
             indices = torch.argsort(z_vals, -1)
             z_vals = torch.gather(z_vals, -1, indices)
-            raw = torch.gather(torch.cat([raw, raw_fine], -2), -2, indices)
+            indices = indices.unsqueeze(-1)
+            raw_comb = torch.cat([raw, raw_fine], -2)
+            raw = torch.gather(raw_comb, -2, indices.expand_as(raw_comb))
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d)
 
@@ -558,6 +640,10 @@ def train():
     print('done')
     i_batch = 0
 
+    images = torch.Tensor(images).to(device)
+    poses = torch.Tensor(poses).to(device)
+    rays_rgbd = torch.Tensor(rays_rgbd).to(device)
+
     # Batch size
     N_rand = args.N_rand
     N_iters = args.N_iters
@@ -570,7 +656,7 @@ def train():
     time0 = time.time()
     for i in trange(start, N_iters):
         # Random over all images
-        batch = rays_rgbd[i_batch:i_batch+N_rand].to(device) # [B, 2+1, 3*?]
+        batch = rays_rgbd[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
         
         batch_rays = torch.stack([torch.zeros_like(batch[:, :3]), batch[:, :3]], 0)
         target_s = batch[:, 3:6]
@@ -588,7 +674,7 @@ def train():
         optimizer.zero_grad()
         rgb, disp, acc, depth, extras = render(H, W, focal, chunk=args.chunk, rays=batch_rays,
                                                 frame_ids=frame_ids,
-                                                verbose=i < 10, retraw=True,
+                                                retraw=True,
                                                 **render_kwargs_train)
         
         img_loss = losses.compute_loss(rgb, target_s, args.rgb_loss_type)
@@ -736,5 +822,6 @@ def train():
 
 
 if __name__ == '__main__':
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
 
