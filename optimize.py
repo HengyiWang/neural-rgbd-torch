@@ -486,8 +486,9 @@ def create_nerf(args):
     if args.ft_path is not None and args.ft_path != 'None':
         ckpts = [args.ft_path]
     else:
-        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
-                 ('model_' in f and 'fine' not in f and 'optimizer' not in f)]
+        # ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
+        #          ('model_' in f and 'fine' not in f and 'optimizer' not in f)]
+        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if '.tar' in f]
     print('Found ckpts', ckpts)
     if len(ckpts) > 0 and not args.no_reload:
         ckpt_path = ckpts[-1]
@@ -733,9 +734,10 @@ def train():
             save_model_dict = {
                 'global_step': global_step,
                 'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }
+            if render_kwargs_train['network_fine'] is not None:
+                save_model_dict['network_fine_state_dict'] = render_kwargs_train['network_fine'].state_dict()
 
             if render_kwargs_train['feature_array'] is not None:
                 save_model_dict['feature_array_state_dict'] = render_kwargs_train['feature_array'].state_dict()
