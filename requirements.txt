@@ -1,0 +1,9 @@
+Cython==0.29.21
+torch==1.10.1
+imageio==2.9.0
+tqdm==4.50.1
+opencv_python==4.5.5.64
+numpy==1.19.2
+ConfigArgParse==1.5.3
+tensorboardX==2.5.1
+trimesh==3.12.6
