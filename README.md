@@ -16,7 +16,7 @@ cd external/NumpyMarchingCubes
 python setup.py install
 ```
 
-
+You can also try the google colab notebook [neural-rgbd-torch.ipynb](https://colab.research.google.com/drive/1eR9EIlW5B9gV3NuAPLpS7HWhiGy6ZGFf?usp=sharing)
 
   ## Dataset
 
