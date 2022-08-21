@@ -801,7 +801,8 @@ def train():
 
             # Save a rendered training view to disk
             img_i = np.random.choice(args.num_training_frames)
-            rgb, disp, acc, depth, extras = get_logging_images(img_i)
+            with torch.no_grad():
+                rgb, disp, acc, depth, extras = get_logging_images(img_i)
             frame_idx = frame_indices[img_i]
 
             trainimgdir = os.path.join(basedir, expname, 'tboard_train_imgs')
